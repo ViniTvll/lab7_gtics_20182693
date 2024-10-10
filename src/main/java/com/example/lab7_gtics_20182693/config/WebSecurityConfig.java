@@ -1,35 +1,73 @@
 package com.example.lab7_gtics_20182693.config;
 
 
+import com.example.lab7_gtics_20182693.repository.UsersRepository;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.provisioning.JdbcUserDetailsManager;
+import org.springframework.security.provisioning.UserDetailsManager;
 import org.springframework.security.web.DefaultRedirectStrategy;
 import org.springframework.security.web.RedirectStrategy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.savedrequest.DefaultSavedRequest;
 
+import javax.sql.DataSource;
 import java.io.IOException;
 import java.util.Collection;
 
 @Configuration
 public class WebSecurityConfig {
 
+    final DataSource dataSource;
+    public WebSecurityConfig(DataSource dataSource, UsersRepository usersRepository) {
+        this.dataSource = dataSource;
+
+    }
+
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, UsersRepository usersRepository) throws Exception {
 
 
         http.formLogin(form -> form
                 .loginPage("/login")
-                .loginProcessingUrl("/procesologueo")
+                .loginProcessingUrl("/submitLoginForm")
                 .usernameParameter("email")
-                .successHandler(authenticationSuccessHandler()) // Llama a un método separado
+                .successHandler((request, response, authentication) -> {
+
+                    DefaultSavedRequest defaultSavedRequest =
+                            (DefaultSavedRequest) request.getSession().getAttribute("SPRING_SECURITY_SAVED_REQUEST");
+
+                    HttpSession session = request.getSession();
+                    session.setAttribute("usuario", usersRepository.findByEmail(authentication.getName()));
+
+
+                    //si vengo por url -> defaultSR existe
+                    if (defaultSavedRequest != null) {
+                        String targetURl = defaultSavedRequest.getRequestURL();
+                        new DefaultRedirectStrategy().sendRedirect(request, response, targetURl);
+                    } else { //estoy viniendo del botón de login
+                        String rol = "";
+                        for (GrantedAuthority role : authentication.getAuthorities()) {
+                            rol = role.getAuthority();
+                            break;
+                        }
+
+                        if (rol.equals("admin")) {
+                            response.sendRedirect("/shipper");
+                        } else {
+                            response.sendRedirect("/employee");
+                        }
+                    }
+                })
                 .permitAll()  // Usar el formulario de login por defecto de Spring Security
         );
 
@@ -38,39 +76,32 @@ public class WebSecurityConfig {
                 .requestMatchers("/cliente","/cliente/**").authenticated()
                 .requestMatchers("/gerente","/gerente/**").authenticated()
                 .anyRequest().permitAll();
+
+        http.logout()
+                .logoutSuccessUrl("/login")
+                .deleteCookies("JSESSIONID")
+                .invalidateHttpSession(true);
         return http.build();
+
     }
 
 
     private RedirectStrategy redirectStrategy = new DefaultRedirectStrategy();
 
-    public AuthenticationSuccessHandler authenticationSuccessHandler() {
-        return new AuthenticationSuccessHandler() {
-            @Override
-            public void onAuthenticationSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication)
-                    throws IOException, ServletException {
-                // Verificar si existe una URL guardada en la sesión (DefaultSavedRequest)
-                DefaultSavedRequest savedRequest = (DefaultSavedRequest) request.getSession().getAttribute("SPRING_SECURITY_SAVED_REQUEST");
-                if (savedRequest != null) {
-                    String targetURL = savedRequest.getRedirectUrl();
-                    redirectStrategy.sendRedirect(request, response, targetURL);
-                } else {
-                    // Obtener los roles del usuario autenticado
-                    Collection<SimpleGrantedAuthority> authorities = (Collection<SimpleGrantedAuthority>) authentication.getAuthorities();
+    @Bean
+    public UserDetailsManager users(DataSource dataSource) {
+        JdbcUserDetailsManager users = new JdbcUserDetailsManager(dataSource);
+        //para loguearse sqlAuth -> username | password | enable
+        String sqlAuth = "SELECT email, password FROM users where email = ?";
 
-                    // Redirigir de acuerdo al rol
-                    if (authorities.stream().anyMatch(role -> role.getAuthority().equals("admin"))) {
-                        response.sendRedirect("/admin/inicio");
-                    } else if (authorities.stream().anyMatch(role -> role.getAuthority().equals("cliente"))) {
-                        response.sendRedirect("/cliente/inicio");
-                    }else if (authorities.stream().anyMatch(role -> role.getAuthority().equals("gerente"))) {
-                        response.sendRedirect("/gerente/inicio");
-                    } else {
-                        // Si no tiene ningún rol específico, redirige a una página por defecto
-                        response.sendRedirect("/login");
-                    }
-                }
-            }
-        };
+        //para autenticación -> username, nombre del rol
+        String sqlAuto = "SELECT u.email, r.name FROM users u " +
+                "inner join roles r on u.roleId = r.roleId " +
+                "where u.email = ?";
 
+        users.setUsersByUsernameQuery(sqlAuth);
+        users.setAuthoritiesByUsernameQuery(sqlAuto);
+
+        return users;
+    }
 }
